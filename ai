@@ -1,0 +1,559 @@
+#!/bin/bash
+
+# Color scheme
+green=$'\e[38;5;035m'
+magenta=$'\e[38;5;207m'
+yellow=$'\e[38;5;142m'
+white=$'\e[38;5;007m'
+blue=$'\e[38;5;038m'
+red=$'\e[38;5;203m'
+black=$'\e[38;5;016m'
+lightyellow=$'\e[38;5;220m'
+lightred=$'\e[38;5;167m'
+lightblue=$'\e[38;5;109m'
+lightgreybg=$'\e[48;5;252m'${black}
+bluebg=$'\e[48;5;038m'${black}
+redbg=$'\e[48;5;210m'${black}
+greenbg=$'\e[48;5;035m'${black}
+yellowbg=$'\e[48;5;142m'${black}
+bold=$'\033[1m'
+dim=$'\e[2m'
+default=$'\e[0m'
+IFS=$'\n'
+
+SAVE_CONVERSATION=true # Should we save conversations?
+SAVE_CONVERSATION_MIN_SIZE=2 # What should be the minimum conversation size to save?
+WORKING_DIR="${HOME}"
+APIKEY_FILENAME=".openai.key" # Stored conversations file
+CONVERSATIONS_FILENAME="conversations.json" # Stored conversations file
+TMP_CONVERSATIONS_FILENAME=".${CONVERSATIONS_FILENAME}.tmp" # swap conversation filename
+CONVERSATION_TOPIC="\"new conversation\"" # Default name for a new conversation
+CONVERSATION_BUFFER_LEN=30 # Conversation buffer length (number of messages ChatGPT will try to remember)
+RETRY_WAIT_TIME=3 # Retry wait time in case of server error
+
+APIKEY_FILENAME="${WORKING_DIR}/${APIKEY_FILENAME}"
+CONVERSATIONS_FILENAME="${WORKING_DIR}/${CONVERSATIONS_FILENAME}"
+TMP_CONVERSATIONS_FILENAME="${WORKING_DIR}/${TMP_CONVERSATIONS_FILENAME}"
+
+StatusbarMessage() { # invoke without parameters to delete the status bar message
+	if [ -n "$statusbar_message" ]; then
+		# delete previous status bar message
+		blank_line=$(printf "%.0s " $(seq "$terminal_width"))
+		printf "\r%s\r" "$blank_line" >&2
+	fi
+	if [ -n "$1" ]; then
+		statusbar_message="$1"
+    msg_chars=$(echo -e "$1")
+		max_msg_size=$((terminal_width-5))
+		if [ "${#msg_chars}" -gt "${max_msg_size}" ]; then
+			statusbar_message="${lightgreybg}${statusbar_message:0:$max_msg_size}${lightgreybg}..."
+		else
+			statusbar_message="${lightgreybg}${statusbar_message}"
+		fi
+		statusbar_message+="${lightgreybg} (press CTRL-C to cancel)...${default}"
+		echo -en "$statusbar_message" >&2
+	fi
+}
+
+SendChat() {
+  # Param ("$@"): the full conversation buffer in JSON format
+  # trim input to only contain the most recent CONVERSATION_BUFFER_LEN elements
+  input=$(jq ".[-$CONVERSATION_BUFFER_LEN:]" <<<"$@")
+  while true; do
+    msg_buf_size=$(wc -c <<<"$input" | numfmt --to=iec)
+    StatusbarMessage "Request sent (size: ${bluebg}$msg_buf_size${lightgreybg} bytes) Waiting for ChatGPT to reply"
+    response_json=$(curl -s https://api.openai.com/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $API_KEY" \
+      -d '{ "model": "gpt-3.5-turbo", "messages": '"$input"' }')
+    gpt_output=$(jq -c '.choices[0].message' <<<"$response_json")
+    if [ "$gpt_output" = "null" ]; then
+      StatusbarMessage
+      error_type=$(jq -r '.error.type' <<<"$response_json")
+      error_code=$(jq -r '.error.code' <<<"$response_json")
+      error_msg=$(jq -r '.error.message' <<<"$response_json")
+      echo -e "\n${red}- API ERROR -${default}" >&2
+      echo -e "${redbg} TYPE ${default} $error_type" >&2
+      echo -e "${redbg} CODE ${default} $error_code" >&2
+      echo -e "${redbg} MESG ${default} $error_msg" >&2
+      retryafter="$RETRY_WAIT_TIME"
+      while [[ ${retryafter} -gt 0 ]]; do
+        StatusbarMessage "ChatGPT error. Retrying in ${redbg}${retryafter}${lightgreybg} seconds"
+        sleep 1
+        (( retryafter-- ))
+      done
+    else 
+      break
+    fi
+  done
+  StatusbarMessage
+  echo "$gpt_output"
+}
+
+MarkdownEcho() {
+  # parse markdown with glow if installed
+  if command -v glow &>/dev/null; then
+    echo -e "$@" | glow
+  else
+    # glow is not installed, just trim leading and trailing newlines from the response
+    output=$(sed -e :a -e '/./,$!d;/^\n*$/{$d;N;};/\n$/ba' <<<"$@")
+    echo -e "$output"
+  fi
+}
+
+UpdateConversationTopic() {
+  # $1 = full conversation history
+  temp_conversation_history=$(jq -c ". += [{\"role\": \"user\", \"content\": \"give me a 4-5 words title for this conversation\"}]" <<<"$conversation_history")
+  CONVERSATION_TOPIC=$(SendChat "$temp_conversation_history" | jq -r '.content' | tr -d '\n')
+  # sometimes ChatGPT replies with conversation names enclosed in double quotes, other times not. Handle it
+  if [ ! "${CONVERSATION_TOPIC::1}" = '"' ]; then
+    CONVERSATION_TOPIC="\"${CONVERSATION_TOPIC}\""
+  fi
+}
+
+SaveConversation() {
+  [[ "$SAVE_CONVERSATION" = false ]] && return
+  current_conversation_size=$(jq -r '. | length' <<<"$conversation_history")
+  if [ "$current_conversation_size" -lt "$SAVE_CONVERSATION_MIN_SIZE" ]; then
+    return
+  fi
+  if [ -w "$CONVERSATIONS_FILENAME" ]; then
+    # conversations file is writeable
+    json_conversation=$(jq '{"conversation_name": '"$CONVERSATION_TOPIC"', "conversation": .}' <<<"$conversation_history")
+    jq --argjson conversation "$json_conversation" '. += [$conversation]' "${CONVERSATIONS_FILENAME}" > "${TMP_CONVERSATIONS_FILENAME}" && \
+      mv "${TMP_CONVERSATIONS_FILENAME}" "${CONVERSATIONS_FILENAME}"
+  fi
+}
+
+ReplayConversationMessages() {
+  # displays the messages in the $conversation_history buffer
+  for row in $(jq -rc '.[]' <<<"$conversation_history"); do
+    speaker=$(jq -r '.role' <<<"$row")
+    rowcontent=$(jq -r '.content' <<<"$row")
+    case "${speaker}" in
+      "user")
+        speaker="YOU"
+        color="$green"
+        colorbg="$greenbg"
+        ;;
+      "assistant")
+        speaker="ChatGPT"
+        color="${default}"
+        colorbg="$lightgreybg"
+        ;;
+    esac
+    echo -en "$color"
+    printf '╭'
+    printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
+    printf '╮'
+    echo -e "\n├ ${colorbg} ${speaker} ${default}${color}\n│"
+    if [ "$speaker" = "YOU" ]; then
+      # draw fancy chat bubble
+      for line in $rowcontent; do
+        echo -e "│ $line"
+      done
+    else
+      # it's a bot response, paste as-is (preserve formatting)
+      MarkdownEcho "$rowcontent"
+    fi
+    printf '╰'
+    printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
+    printf '╯'
+    echo ""
+  done
+}
+
+Ctrl_C() {
+  SaveConversation
+  StatusbarMessage
+  tput sgr0
+  exit 0
+}
+
+ParseConversationsFile(){
+  # check if conversation storing is enabled
+  if [ "$SAVE_CONVERSATION" = true ]; then
+    # load conversations file
+    if [ ! -f "$CONVERSATIONS_FILENAME" ]; then
+      if [ "$CONTINUE_CONVERSATION" = true ]; then
+        echo "Error: conversations file does not exist, cannot continue last conversation"
+        exit 1
+      elif [ "$DELETE_CONVERSATION" = true ]; then
+        echo "Error: conversations file does not exist, cannot delete conversation"
+        exit 1
+      fi
+      # conversations file does not exist, initialize it
+      echo "[]" > "$CONVERSATIONS_FILENAME"
+      num_previous_conversations=0
+    else
+      num_previous_conversations=$(jq '. | length' "${CONVERSATIONS_FILENAME}" 2>/dev/null)
+      if [ -z "$num_previous_conversations" ]; then
+        if [ "$CONTINUE_CONVERSATION" = true ]; then
+          echo "Error: conversations file is corrupted, cannot continue last conversation"
+          exit 1
+        elif [ "$DELETE_CONVERSATION" = true ]; then
+          echo "Error: conversations file is corrupted, cannot delete conversation"
+          exit 1
+        fi
+        # conversations file is invalid, reinitialize it
+        echo "[]" > "$CONVERSATIONS_FILENAME"
+        num_previous_conversations=0
+      fi
+    fi
+  fi
+}
+
+SwitchConversation() {
+  #
+  # @param $1 => conversation id (JSON array index) to switch to
+  #
+  # extract the requested conversation JSON
+  conversation_json=$(jq '.['"$1"']' "$CONVERSATIONS_FILENAME")
+  # load the new conversation into the current session
+  conversation_history=$(jq '.conversation' <<<"$conversation_json")
+  # update the conversation messages number
+  conversation_messages=$(jq 'length' <<<"$conversation_history")
+  # and switch the topic
+  CONVERSATION_TOPIC=$(jq '.conversation_name' <<<"$conversation_json")
+  # delete the old conversation from the conversations file.
+  # an updated version of this conversation will be saved at the end of this session
+  jq 'del (.['"$1"'])' "${CONVERSATIONS_FILENAME}" > "${TMP_CONVERSATIONS_FILENAME}" && \
+    mv "${TMP_CONVERSATIONS_FILENAME}" "${CONVERSATIONS_FILENAME}"
+  # show the old conversation to the user
+  ReplayConversationMessages
+}
+
+ShowConversationsMenu() {
+  if [ "$SAVE_CONVERSATION" = true ]; then
+    ParseConversationsFile
+    echo -e "\n\n${yellowbg} Current conversation ${default}${yellow}\n  $CONVERSATION_TOPIC\n"
+    echo -en "${yellowbg} Previous conversations ${default}${yellow}"
+    if [ "$num_previous_conversations" = "0" ]; then
+      echo -en "\n  ${yellow}No previous/other conversations found!"
+    else
+      title_list=$(jq '.[].conversation_name' "$CONVERSATIONS_FILENAME")
+      i=1
+      for title in $title_list; do
+        printf "\n%3d) %s" "$i" "$title"
+        (( i++ ))
+      done
+    fi
+    #echo -e "\n\n  ${bold}0) START A NEW CONVERSATION${default}${yellow}"
+    echo -e "\n\n${dim}Choose a conversation to continue, or\n${default}${yellow}[   0   ]${default}${yellow}${dim} to start a new conversation\n${default}${yellow}[ ENTER ]${default}${yellow}${dim} to return to the current one\n"
+    while true; do
+      read -erp "${default}${yellow}» " convmenuinput
+      if [ -n "$convmenuinput" ]; then
+        if [[ $convmenuinput =~ ^[0-9]+$ ]]; then
+          # user entered a valid integer
+          if [ "$convmenuinput" -gt "$num_previous_conversations" ] || [ "$convmenuinput" -lt 0 ]; then
+            echo "Please enter a number between 0 and $num_previous_conversations"
+            continue
+          else
+            (( convmenuinput-- )) # convmenuinput now points to the appropriate conversations JSON array index
+            break
+          fi
+        else
+          echo "Please enter a number between 0 and $num_previous_conversations"
+        fi
+      else
+        # user pressed enter, abort
+        echo
+        break
+      fi
+    done
+    if [ -n "$convmenuinput" ]; then
+      # user chose to continue a conversation or start a new one, first of all save the current one to disk
+      SaveConversation
+      if [ "$convmenuinput" = "-1" ]; then
+        # the user entered '0' to start a new conversation
+        CONVERSATION_TOPIC="\"new conversation\""
+        conversation_history="[]"
+        conversation_messages=0
+        echo -e "\n${greenbg} NEW CONVERSATION STARTED ${default}\n"
+        return
+      else
+        # the users wants to continue a previous conversation
+        SwitchConversation "$convmenuinput"
+      fi
+    fi
+  else
+    echo -e "\n\n${redbg} ERROR ${default}${red} conversation saving is not enabled!\n"
+  fi
+}
+
+#*
+#* Main script start
+#*
+
+terminal_width=$(tput cols)
+trap 'terminal_width=$(tput cols)' SIGWINCH
+conversation_history="[]"
+userinput=""
+OPTIONS_PRESENT=false
+PIPED_SCRIPT=false
+INTERACTIVE_CONVERSATION=false
+DELETE_CONVERSATION=false
+CONTINUE_CONVERSATION=false
+CONVERSATION_ID_TO_CONTINUE=""
+
+# load APIKEY file
+if [ ! -f "$APIKEY_FILENAME" ]; then
+  # APIKEY file does not exist, prompt the user for a password and store it
+  echo ""
+  read -rsp "${blue}Please enter your OpenAI API key: ${default}" API_KEY
+  echo "$API_KEY" > "$APIKEY_FILENAME"
+  chmod 600 "$APIKEY_FILENAME"
+  echo -e "${bluebg} SUCCESS ${default}${blue} Key saved to file \"$APIKEY_FILENAME\""
+else
+  API_KEY=$(cat "$APIKEY_FILENAME")
+fi
+
+if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
+  # script was called with a command line parameter, or was invoked through a pipe
+  if [ "$#" -ge 1 ]; then
+    # parse command line options
+    #
+    # optspec contains:
+    # - options followed by a colon: parameter is mandatory
+    # - first colon: disable getopts' own error reporting
+    # 	in this mode, getopts sets optchar to:
+    # 	'?' -> unknown option
+    # 	':' -> missing mandatory parameter to the option
+    optspec=":hcd:li"
+
+    while getopts "$optspec" optchar; do {
+
+      GetFullParamsFromCurrentPosition(){
+        #
+        # Helper function that retrieves all the command line
+        # parameters starting from position $OPTIND (current
+        # option's argument as being parsed by getopts)
+        #
+        # 1) first param is set to current option's param (space-separated)
+        # 2) then append (if any exist) the following command line params.
+        #
+        # this allows for invocations such as 'ai -i SENTENCE WITH SPACES'
+        # without having to quote SENTENCE WITH SPACES
+        # The function requires passing the original $@ as parameter
+        # so as to not confuse it with the function's own $@.
+        #
+        # in the above example, $OPTARG="SENTENCE", $OPTIND="3", ${@:$OPTIND}=array("WITH" "SPACES")
+        #
+        userinput="$OPTARG"
+        for option in "${@:$OPTIND}"; do
+          userinput+=" $option"
+        done
+      }
+
+      OPTIONS_PRESENT=true
+      case "${optchar}" in
+        "h")
+          # display usage help
+          echo -e "\n${bold}Usage:${default}\n\n${dim}Show this help:${default}\n  ${blue}ai -h${default}"
+          echo -e "${dim}Start a new interactive conversation:${default}\n  ${blue}ai${default}"
+          echo -e "${dim}One shot Q&A (exit after reply):${default}\n  ${blue}ai \"what is love?\"${default}"
+          echo -e "${dim}Force an interactive conversation (continue interacting after reply):${default}\n  ${blue}ai -i \"what are you?\"${default}"
+          echo -e "${dim}Submit data as part of the question:${default}\n  ${blue}cat file.txt | ai can you summarize the contents of this file?${default}"
+          echo -e "${dim}List saved conversations:${default}\n  ${blue}ai -l${default}"
+          echo -e "${dim}Continue last conversation:${default}\n  ${blue}ai -c${default}"
+          echo -e "${dim}Continue specific conversation:${default}\n  ${blue}ai -c [conversation_id]${default}"
+          echo -e "${dim}Delete a conversation:${default}\n  ${blue}ai -d <conversation_id>${default}"
+          echo -e "${dim}Delete all conversations:${default}\n  ${blue}rm \"${CONVERSATIONS_FILENAME}\"${default}"
+          exit 0
+          ;;
+        "c")
+          # user wants to continue a conversation
+          INTERACTIVE_CONVERSATION=true
+          CONTINUE_CONVERSATION=true
+          GetFullParamsFromCurrentPosition "$@"
+          CONVERSATION_ID_TO_CONTINUE=${userinput//[^0-9]/} # remove all non-digits (e.g. the user passed "-c3" instead of "-c 3")
+          break
+          ;;
+        "d")
+          # user wants to delete a previous conversation
+          GetFullParamsFromCurrentPosition "$@"
+          DELETE_CONVERSATION=true
+          ParseConversationsFile
+          echo "userinput: $userinput"
+          CONVERSATION_ID_TO_DELETE=${userinput//[^0-9]/} # remove all non-digits (e.g. the user passed "-d3" instead of "-d 3")
+          (( CONVERSATION_ID_TO_DELETE-- ))
+          convname=$(jq '.['"${CONVERSATION_ID_TO_DELETE}"'].conversation_name' "$CONVERSATIONS_FILENAME")
+          jq 'del (.['"$CONVERSATION_ID_TO_DELETE"'])' "${CONVERSATIONS_FILENAME}" > "${TMP_CONVERSATIONS_FILENAME}" && \
+            mv "${TMP_CONVERSATIONS_FILENAME}" "${CONVERSATIONS_FILENAME}"
+          echo -e "\n\n${default}Conversation ${yellow}$convname${default} deleted"
+          exit 0
+          ;;
+        "l")
+          # user wants to list previous conversations
+          ParseConversationsFile
+          echo -en "\n${yellowbg} Previous conversations ${default}${yellow}"
+          if [ "$num_previous_conversations" = "0" ]; then
+            echo -e "\n\nNo previous conversation found.${default}"
+            exit 0
+          fi
+          title_list=$(jq '.[].conversation_name' "$CONVERSATIONS_FILENAME")
+          i=1
+          for title in $title_list; do
+            printf "\n%3d) %s" "$i" "$title"
+            (( i++ ))
+          done
+          echo -e "\n\n${default}Use ${blue}${bold}ai -c <id>${default} to continue a specific conversation"
+          exit
+          ;;
+        "i")
+          # user wants to continue interacting after the reply
+          INTERACTIVE_CONVERSATION=true
+          shift
+          break
+          ;;
+        *)
+          if [ "$OPTERR" = 1 ] && [ -t 0 ]; then
+            [[ "$optchar" = "?" ]] && echo -e "Error: unknown option '-$OPTARG'"
+            [[ "$optchar" = ":" ]] && echo -e "Error: option '-$OPTARG' requires an argument"
+            exit 1
+          fi
+          ;;
+      esac
+    }
+    done
+    # trim leading whitespace from userinput
+    userinput=$(awk '{ sub(/^[ \t]+/, ""); print }' <<<"$userinput")
+  fi
+
+  if [ "$CONTINUE_CONVERSATION" = true ]; then
+    ParseConversationsFile
+    if [ "$num_previous_conversations" = "0" ]; then
+      echo "Error: No previous conversations found, cannot continue!"
+      exit 1
+    fi
+    if [ -z "$CONVERSATION_ID_TO_CONTINUE" ]; then
+      # continue last conversation
+      conversation_id=$(jq 'length-1' "$CONVERSATIONS_FILENAME")
+    else
+      # continue a specific conversation
+      if [ "$CONVERSATION_ID_TO_CONTINUE" -gt "$num_previous_conversations" ]; then
+        echo "Error: invalid conversation id"
+        exit 1
+      fi
+      conversation_id="$(( CONVERSATION_ID_TO_CONTINUE-1 ))"
+    fi
+    SwitchConversation "$conversation_id"
+  else
+    if [ ! -t 0 ]; then
+      # we have input from stdin (script was invoked through a pipe)
+      # also parse the input passed and treat the stdin input as "attachment" data
+      PIPED_SCRIPT=true
+      if [ "$CONTINUE_CONVERSATION" = true ]; then
+        echo "Error: cannot continue last conversation and also accept new data"
+        exit 1
+      fi
+
+      if [ "$OPTIONS_PRESENT" = false ]; then
+        userinput="$@"
+      fi
+      userinput=$(jq -Rs --arg userinput "$userinput" '$userinput + "\n" + .')
+    else
+      # no stdin
+      # trim trailing newline from userinput and make a JSON string
+      # out of the sole user input to safely pass to the API endpoint
+      userinput=$(echo -en "$@")
+      userinput=$(echo -en "$userinput" | jq -Rs '.')
+    fi
+    userinput=$( echo -en "[{\"role\": \"user\", \"content\": $userinput}]")
+    # echo "$userinput"; exit # DBG
+    response_message=$(SendChat "$userinput")
+    response_text=$(jq -r '.content' <<<"$response_message")
+    echo -e "\n${lightgreybg} ChatGPT ${default} replied:"
+    MarkdownEcho "$response_text"
+    if [ "$PIPED_SCRIPT" = true ]; then
+      # escape user input to create a JSON string, safe to pass on
+      userinput=$(jq -Rs '.' <<<"$userinput")
+      conversation_history=$(jq -c ". += $userinput" <<<"$conversation_history")
+      conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
+      conversation_messages=2
+      UpdateConversationTopic
+      SaveConversation
+      echo "${bold}- Note: you can continue this conversation by invoking ${blue}ai -c${default}"
+      exit 0
+    elif [ "$INTERACTIVE_CONVERSATION" = true ]; then
+      # prepare the conversation, which was already started through the command line
+      conversation_history=$(jq -c ". += $userinput" <<<"$conversation_history")
+      conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
+      conversation_messages=2
+      UpdateConversationTopic
+    else
+      # one shot Q&A, exit after reply
+      exit 0
+    fi
+  fi
+else
+  # script was called without parameters, setup a new conversation
+  INTERACTIVE_CONVERSATION=true
+  conversation_messages=0
+fi
+
+ParseConversationsFile
+
+#*############*#
+#* REPL start *#
+#*############*#
+
+stty -echoctl && trap Ctrl_C INT
+echo -en "\n${green}Enter an empty line to send your query, or ${greenbg} ? ${default}${green} to view previous conversations)\n"
+while true; do
+  userinput=""
+  SHOW_CONVMENU=false
+  echo -en "$green"
+  printf '╭'
+  printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
+  printf '╮'
+  echo -e "\n├ ${greenbg} YOU ${default}${green} (conversation topic: ${CONVERSATION_TOPIC})\n│"
+  while true; do
+    read -erp "│ » " inputline
+    if [ "$inputline" = "?" ]; then
+      SHOW_CONVMENU=true
+      break
+    fi
+    if [ -z "$inputline" ]; then
+      # user sent an empty line
+      if [ -n "$userinput" ]; then 
+        # the user entered previous text, proceed
+        break
+      else
+        # avoid sending an empty query, ignore this empty line
+        continue
+      fi
+    fi
+    [[ -n "$userinput" ]] && userinput+="\n"
+    userinput+="$inputline"
+  done
+  tput cuu 1; tput el # remove the previous line (empty ">" prompt)
+  printf '╰'
+  printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
+  printf '╯'
+  if [ "$SHOW_CONVMENU" = true ]; then
+    ShowConversationsMenu
+  else
+    # escape user input to create a JSON string, safe to pass on
+    userinput=$(jq -Rs '.' <<<"$userinput")
+    conversation_history=$(jq -c ". += [{\"role\": \"user\", \"content\": $userinput}]" <<<"$conversation_history")
+    (( conversation_messages+=2 ))
+    response_message=$(SendChat "$conversation_history")
+    conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
+    # update the topic after the first interaction, and afterwards every 2 interactions with the AI
+    if (( conversation_messages == 2 )) || ( \
+      (( conversation_messages != 4 )) && (( conversation_messages % 4 == 0 ))
+    ); then
+      UpdateConversationTopic
+    fi
+    response_text=$(jq -r '.content' <<<"$response_message")
+    printf '╭'
+    printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
+    printf '╮'
+    echo -e "\n├ ${lightgreybg} ChatGPT ${default}\n│"
+    MarkdownEcho "$response_text"
+    printf '╰'
+    printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
+    printf '╯'
+  fi
+done
