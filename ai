@@ -35,6 +35,8 @@ APIKEY_FILENAME="${WORKING_DIR}/${APIKEY_FILENAME}"
 CONVERSATIONS_FILENAME="${WORKING_DIR}/${CONVERSATIONS_FILENAME}"
 TMP_CONVERSATIONS_FILENAME="${WORKING_DIR}/${TMP_CONVERSATIONS_FILENAME}"
 
+API_KEY=""
+
 StatusbarMessage() { # invoke without parameters to delete the status bar message
 	if [ -n "$statusbar_message" ]; then
 		# delete previous status bar message
@@ -53,6 +55,29 @@ StatusbarMessage() { # invoke without parameters to delete the status bar messag
 		statusbar_message+="${lightgreybg} (press CTRL-C to cancel)...${default}"
 		echo -en "$statusbar_message" >&2
 	fi
+}
+
+ChatBubble() {
+  # Param ("$1"): speaker's name
+  # Param ("$2"): speaker's name background color
+  # Param ("$3"): chat bubble color
+  # Param [optional] (rest of the input): other text to display (e.g. conversation topic)
+  local speaker="$1"; shift
+  local bgcolor="$1"; shift
+  local bubblecolor="$1"; shift
+  texttoshow="$@"
+  
+  [[ -n "${texttoshow}" ]] && texttoshow=" ${texttoshow}"
+  output="╞ ${bgcolor} ${speaker} ${default}${bubblecolor}${texttoshow} ╡"
+  output_len=$(( ${#speaker} + ${#texttoshow} + 2 ))
+  echo -en "${bubblecolor}"
+  printf '\n╭'
+  printf '%.s─' $(seq 1 $(( output_len + 2 )) )
+  printf '╮\n'
+  echo -e "$output"
+  printf '╰'
+  printf '%.s─' $(seq 1 $(( output_len + 2 )) )
+  printf '╯\n'
 }
 
 SendChat() {
@@ -138,28 +163,19 @@ ReplayConversationMessages() {
         ;;
       "assistant")
         speaker="ChatGPT"
-        color="${default}"
+        color="$white"
         colorbg="$lightgreybg"
         ;;
     esac
-    echo -en "$color"
-    printf '╭'
-    printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
-    printf '╮'
-    echo -e "\n├ ${colorbg} ${speaker} ${default}${color}\n│"
-    if [ "$speaker" = "YOU" ]; then
-      # draw fancy chat bubble
-      for line in $rowcontent; do
-        echo -e "│ $line"
-      done
-    else
-      # it's a bot response, paste as-is (preserve formatting)
+    ChatBubble "$speaker" "$colorbg" "$color"
+    if [ "$speaker" = "ChatGPT" ]; then
+      # preserve markdown formatting in bot replies
       MarkdownEcho "$rowcontent"
+    else
+      for line in $(echo -e "$rowcontent"); do
+        echo -e "» $line"
+      done
     fi
-    printf '╰'
-    printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
-    printf '╯'
-    echo ""
   done
 }
 
@@ -281,6 +297,27 @@ ShowConversationsMenu() {
   fi
 }
 
+GetAPIKey() {
+  # load APIKEY file
+  if [ -z "$API_KEY" ]; then
+    if [ ! -f "$APIKEY_FILENAME" ]; then
+      # APIKEY file does not exist, prompt the user for a password and store it (unless we're running through a pipe)
+      if [ "$PIPED_SCRIPT" = true ]; then
+        echo "Error: please set your API key first by running the script without parameters"
+        exit 1
+      else
+        echo ""
+        read -rsp "${blue}Please enter your OpenAI API key: ${default}" API_KEY
+        echo "$API_KEY" > "$APIKEY_FILENAME"
+        chmod 600 "$APIKEY_FILENAME"
+        echo -e "${bluebg} SUCCESS ${default}${blue} Key saved to file \"$APIKEY_FILENAME\""
+      fi
+    else
+      API_KEY=$(cat "$APIKEY_FILENAME")
+    fi
+  fi
+}
+
 #*
 #* Main script start
 #*
@@ -295,18 +332,6 @@ INTERACTIVE_CONVERSATION=false
 DELETE_CONVERSATION=false
 CONTINUE_CONVERSATION=false
 CONVERSATION_ID_TO_CONTINUE=""
-
-# load APIKEY file
-if [ ! -f "$APIKEY_FILENAME" ]; then
-  # APIKEY file does not exist, prompt the user for a password and store it
-  echo ""
-  read -rsp "${blue}Please enter your OpenAI API key: ${default}" API_KEY
-  echo "$API_KEY" > "$APIKEY_FILENAME"
-  chmod 600 "$APIKEY_FILENAME"
-  echo -e "${bluebg} SUCCESS ${default}${blue} Key saved to file \"$APIKEY_FILENAME\""
-else
-  API_KEY=$(cat "$APIKEY_FILENAME")
-fi
 
 if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
   # script was called with a command line parameter, or was invoked through a pipe
@@ -374,13 +399,17 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
           GetFullParamsFromCurrentPosition "$@"
           DELETE_CONVERSATION=true
           ParseConversationsFile
-          echo "userinput: $userinput"
           CONVERSATION_ID_TO_DELETE=${userinput//[^0-9]/} # remove all non-digits (e.g. the user passed "-d3" instead of "-d 3")
+          if  (( CONVERSATION_ID_TO_DELETE > num_previous_conversations )) || \
+              (( CONVERSATION_ID_TO_DELETE = 0 )); then
+            echo -e "\nError: conversation not found, cannot delete it!"
+            exit 1
+          fi
           (( CONVERSATION_ID_TO_DELETE-- ))
           convname=$(jq '.['"${CONVERSATION_ID_TO_DELETE}"'].conversation_name' "$CONVERSATIONS_FILENAME")
           jq 'del (.['"$CONVERSATION_ID_TO_DELETE"'])' "${CONVERSATIONS_FILENAME}" > "${TMP_CONVERSATIONS_FILENAME}" && \
             mv "${TMP_CONVERSATIONS_FILENAME}" "${CONVERSATIONS_FILENAME}"
-          echo -e "\n\n${default}Conversation ${yellow}$convname${default} deleted"
+          echo -e "\n${default}Conversation ${yellow}$convname${default} deleted"
           exit 0
           ;;
         "l")
@@ -397,7 +426,7 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
             printf "\n%3d) %s" "$i" "$title"
             (( i++ ))
           done
-          echo -e "\n\n${default}Use ${blue}${bold}ai -c <id>${default} to continue a specific conversation"
+          echo -e "\n\n${default}Use ${blue}${bold}ai -c <id>${default} to continue a specific conversation or ${blue}${bold}ai -d <id>${default} to delete it"
           exit
           ;;
         "i")
@@ -420,8 +449,8 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
     userinput=$(awk '{ sub(/^[ \t]+/, ""); print }' <<<"$userinput")
   fi
 
+  ParseConversationsFile
   if [ "$CONTINUE_CONVERSATION" = true ]; then
-    ParseConversationsFile
     if [ "$num_previous_conversations" = "0" ]; then
       echo "Error: No previous conversations found, cannot continue!"
       exit 1
@@ -441,7 +470,6 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
   else
     if [ ! -t 0 ]; then
       # we have input from stdin (script was invoked through a pipe)
-      # also parse the input passed and treat the stdin input as "attachment" data
       PIPED_SCRIPT=true
       if [ "$CONTINUE_CONVERSATION" = true ]; then
         echo "Error: cannot continue last conversation and also accept new data"
@@ -451,6 +479,8 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
       if [ "$OPTIONS_PRESENT" = false ]; then
         userinput="$@"
       fi
+      # parse the input passed and treat the stdin input (sanitized into a safe JSON string) as "attachment" data
+      # resulting $userinput will be "<script arguments> \n <stdin data>"
       userinput=$(jq -Rs --arg userinput "$userinput" '$userinput + "\n" + .')
     else
       # no stdin
@@ -459,15 +489,14 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
       userinput=$(echo -en "$@")
       userinput=$(echo -en "$userinput" | jq -Rs '.')
     fi
-    userinput=$( echo -en "[{\"role\": \"user\", \"content\": $userinput}]")
+    GetAPIKey
+    userinput=$( echo -n "[{\"role\": \"user\", \"content\": $userinput}]")
     # echo "$userinput"; exit # DBG
     response_message=$(SendChat "$userinput")
     response_text=$(jq -r '.content' <<<"$response_message")
     echo -e "\n${lightgreybg} ChatGPT ${default} replied:"
     MarkdownEcho "$response_text"
     if [ "$PIPED_SCRIPT" = true ]; then
-      # escape user input to create a JSON string, safe to pass on
-      userinput=$(jq -Rs '.' <<<"$userinput")
       conversation_history=$(jq -c ". += $userinput" <<<"$conversation_history")
       conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
       conversation_messages=2
@@ -499,17 +528,16 @@ ParseConversationsFile
 #*############*#
 
 stty -echoctl && trap Ctrl_C INT
+
+GetAPIKey
+
 echo -en "\n${green}Enter an empty line to send your query, or ${greenbg} ? ${default}${green} to view previous conversations)\n"
 while true; do
   userinput=""
   SHOW_CONVMENU=false
-  echo -en "$green"
-  printf '╭'
-  printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
-  printf '╮'
-  echo -e "\n├ ${greenbg} YOU ${default}${green} (conversation topic: ${CONVERSATION_TOPIC})\n│"
+  ChatBubble "YOU" "${greenbg}" "${green}" "(conversation topic: ${CONVERSATION_TOPIC})"
   while true; do
-    read -erp "│ » " inputline
+    read -erp "» " inputline
     if [ "$inputline" = "?" ]; then
       SHOW_CONVMENU=true
       break
@@ -527,10 +555,8 @@ while true; do
     [[ -n "$userinput" ]] && userinput+="\n"
     userinput+="$inputline"
   done
-  tput cuu 1; tput el # remove the previous line (empty ">" prompt)
-  printf '╰'
-  printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
-  printf '╯'
+  tput cuu 1; tput el; tput cud 1 # remove the previous line (empty "»" prompt)
+
   if [ "$SHOW_CONVMENU" = true ]; then
     ShowConversationsMenu
   else
@@ -547,13 +573,7 @@ while true; do
       UpdateConversationTopic
     fi
     response_text=$(jq -r '.content' <<<"$response_message")
-    printf '╭'
-    printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
-    printf '╮'
-    echo -e "\n├ ${lightgreybg} ChatGPT ${default}\n│"
+    ChatBubble "ChatGPT" "${lightgreybg}" "${white}"
     MarkdownEcho "$response_text"
-    printf '╰'
-    printf '%.s─' $(seq 1 $(( $(tput cols) - 2 )) )
-    printf '╯'
   fi
 done
