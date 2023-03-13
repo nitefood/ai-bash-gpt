@@ -1,16 +1,24 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+# ╭──────────────────────────────────────────────────────────────────────────────────────╮
+# │    AI - a commandline ChatGPT client in BASH with conversation/completion support    │
+# │                                                                                      │
+# │Project homepage:                                                                     │
+# │                                                                                      │
+# │ https://github.com/nitefood/ai-bash-gpt                                              │
+# │                                                                                      │
+# │Usage:                                                                                │
+# │                                                                                      │
+# │ (Launch the script with the -h parameter or visit the project's homepage)            │
+# ╰──────────────────────────────────────────────────────────────────────────────────────╯
 
 # Color scheme
 green=$'\e[38;5;035m'
-magenta=$'\e[38;5;207m'
 yellow=$'\e[38;5;142m'
 white=$'\e[38;5;007m'
 blue=$'\e[38;5;038m'
 red=$'\e[38;5;203m'
 black=$'\e[38;5;016m'
-lightyellow=$'\e[38;5;220m'
-lightred=$'\e[38;5;167m'
-lightblue=$'\e[38;5;109m'
 lightgreybg=$'\e[48;5;252m'${black}
 bluebg=$'\e[48;5;038m'${black}
 redbg=$'\e[48;5;210m'${black}
@@ -65,6 +73,7 @@ ChatBubble() {
   local speaker="$1"; shift
   local bgcolor="$1"; shift
   local bubblecolor="$1"; shift
+  # shellcheck disable=SC2124
   texttoshow="$@"
   
   [[ -n "${texttoshow}" ]] && texttoshow=" ${texttoshow}"
@@ -478,6 +487,7 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
       fi
 
       if [ "$OPTIONS_PRESENT" = false ]; then
+        # shellcheck disable=SC2124
         userinput="$@"
       fi
       # parse the input passed and treat the stdin input (sanitized into a safe JSON string) as "attachment" data

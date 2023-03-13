@@ -8,11 +8,11 @@
 
 * **Multiline input**
 
-* **Markdown support for replies** (requires [glow](https://github.com/charmbracelet/glow#installation) or [mdless](https://github.com/ttscoff/mdless#installation))
+* **Markdown support for replies** (requires [glow](https://github.com/charmbracelet/glow#installation))
 
 * **One shot Q&A** with optional follow-up conversation
 
-* **STDIN piping** (sending file contents to ChatGPT)
+* **Data piping support** (sending file contents to ChatGPT)
 
 * **Full conversation support**:
   
@@ -36,9 +36,9 @@
 Start a new interactive conversation:
   ai
 One shot Q&A (exit after reply):
-  ai "what is love?"
+  ai "how many planets are there in the solar system?"
 Force an interactive conversation (continue interacting after reply):
-  ai -i "what are you?"
+  ai -i "what is the fastest animal on earth?"
 Submit data as part of the question:
   cat file.txt | ai can you summarize the contents of this file?
 List saved conversations:
@@ -50,13 +50,29 @@ Continue specific conversation:
 Delete a conversation:
   ai -d <conversation_id>
 Delete all conversations:
-  rm "conversations.json"
+  rm "/root/conversations.json"
 ```
 
 ---
 
 ## Example usage:
 
-[![asciicast](https://asciinema.org/a/skNoeQlIH3Y1LBce5Q4EeRVjx.png)](https://asciinema.org/a/skNoeQlIH3Y1LBce5Q4EeRVjx)
+[![asciicast](https://asciinema.org/a/566887.svg)](https://asciinema.org/a/566887)
 
+---
 
+## Installation:
+
+###### Prerequisites:
+
+* Install [glow](https://github.com/charmbracelet/glow#installation) for Markdown rendering support in your terminal
+
+* `jq` (e.g. `apt install jq`)
+
+* `curl` (e.g. `apt install curl`)
+
+Install the script by either cloning this repository or directly downloading to your `$PATH`, e.g.:
+
+```shell
+curl "https://raw.githubusercontent.com/nitefood/ai-bash-gpt/master/ai" > /usr/bin/ai && chmod 0755 /usr/bin/ai
+```
