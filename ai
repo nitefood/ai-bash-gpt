@@ -130,10 +130,11 @@ UpdateConversationTopic() {
   # $1 = full conversation history
   temp_conversation_history=$(jq -c ". += [{\"role\": \"user\", \"content\": \"give me a 4-5 words title for this conversation\"}]" <<<"$conversation_history")
   CONVERSATION_TOPIC=$(SendChat "$temp_conversation_history" | jq -r '.content' | tr -d '\n')
-  # sometimes ChatGPT replies with conversation names enclosed in double quotes, other times not. Handle it
-  if [ ! "${CONVERSATION_TOPIC::1}" = '"' ]; then
-    CONVERSATION_TOPIC="\"${CONVERSATION_TOPIC}\""
+  # sometimes ChatGPT replies with conversation names enclosed in double quotes, other times it has double quotes inside the topic description. Handle it
+  if [ "${CONVERSATION_TOPIC::1}" = '"' ] && [ "${CONVERSATION_TOPIC: -1}" = '"' ]; then
+    CONVERSATION_TOPIC=$(sed -e 's/^"//g' -e 's/"$//g' <<<"$CONVERSATION_TOPIC")
   fi
+  CONVERSATION_TOPIC=$(echo -n "$CONVERSATION_TOPIC" | jq -Rs '.')
 }
 
 SaveConversation() {
@@ -303,7 +304,7 @@ GetAPIKey() {
     if [ ! -f "$APIKEY_FILENAME" ]; then
       # APIKEY file does not exist, prompt the user for a password and store it (unless we're running through a pipe)
       if [ "$PIPED_SCRIPT" = true ]; then
-        echo "Error: please set your API key first by running the script without parameters"
+        echo -e "\nError: please set your API key first by running the script without parameters"
         exit 1
       else
         echo ""
@@ -376,8 +377,8 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
           # display usage help
           echo -e "\n${bold}Usage:${default}\n\n${dim}Show this help:${default}\n  ${blue}ai -h${default}"
           echo -e "${dim}Start a new interactive conversation:${default}\n  ${blue}ai${default}"
-          echo -e "${dim}One shot Q&A (exit after reply):${default}\n  ${blue}ai \"what is love?\"${default}"
-          echo -e "${dim}Force an interactive conversation (continue interacting after reply):${default}\n  ${blue}ai -i \"what are you?\"${default}"
+          echo -e "${dim}One shot Q&A (exit after reply):${default}\n  ${blue}ai \"how many planets are there in the solar system?\"${default}"
+          echo -e "${dim}Force an interactive conversation (continue interacting after reply):${default}\n  ${blue}ai -i \"what is the fastest animal on earth?\"${default}"
           echo -e "${dim}Submit data as part of the question:${default}\n  ${blue}cat file.txt | ai can you summarize the contents of this file?${default}"
           echo -e "${dim}List saved conversations:${default}\n  ${blue}ai -l${default}"
           echo -e "${dim}Continue last conversation:${default}\n  ${blue}ai -c${default}"
@@ -401,7 +402,7 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
           ParseConversationsFile
           CONVERSATION_ID_TO_DELETE=${userinput//[^0-9]/} # remove all non-digits (e.g. the user passed "-d3" instead of "-d 3")
           if  (( CONVERSATION_ID_TO_DELETE > num_previous_conversations )) || \
-              (( CONVERSATION_ID_TO_DELETE = 0 )); then
+              (( CONVERSATION_ID_TO_DELETE == 0 )); then
             echo -e "\nError: conversation not found, cannot delete it!"
             exit 1
           fi
@@ -426,7 +427,7 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
             printf "\n%3d) %s" "$i" "$title"
             (( i++ ))
           done
-          echo -e "\n\n${default}Use ${blue}${bold}ai -c <id>${default} to continue a specific conversation or ${blue}${bold}ai -d <id>${default} to delete it"
+          echo -e "\n\n${default}Use ${blue}${bold}ai -c${default} to continue last conversation, ${blue}${bold}ai -c <id>${default} to continue a specific one, or ${blue}${bold}ai -d <id>${default} to delete it"
           exit
           ;;
         "i")
