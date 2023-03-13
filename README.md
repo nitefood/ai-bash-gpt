@@ -1,7 +1,5 @@
 # AI - a commandline ChatGPT client in BASH with conversation/completion support
 
----
-
 ## Features:
 
 * **Interactive chat sessions** with the `gpt-3.5-turbo` API endpoint (aka ChatGPT)
@@ -28,38 +26,47 @@
   
   * Automatic conversation topic identification and update
 
----
-
 ## Full command line options (`ai -h`):
 
-```shell
-Start a new interactive conversation:
-  ai
-One shot Q&A (exit after reply):
-  ai "how many planets are there in the solar system?"
-Force an interactive conversation (continue interacting after reply):
-  ai -i "what is the fastest animal on earth?"
-Submit data as part of the question:
-  cat file.txt | ai can you summarize the contents of this file?
-List saved conversations:
-  ai -l
-Continue last conversation:
-  ai -c
-Continue specific conversation:
-  ai -c [conversation_id]
-Delete a conversation:
-  ai -d <conversation_id>
-Delete all conversations:
-  rm "/root/conversations.json"
-```
+###### Start a new interactive conversation:
 
----
+`ai`
+
+###### One shot Q&A (exit after reply):
+
+`ai "how many planets are there in the solar system?"`
+
+###### Force an interactive conversation (continue interacting after reply):
+
+`ai -i "what is the fastest animal on earth?"`
+
+###### Submit data as part of the question:
+
+`cat file.txt | ai can you summarize the contents of this file?`
+
+###### List saved conversations:
+
+`ai -l`
+
+###### Continue last conversation:
+
+`ai -c`
+
+###### Continue specific conversation:
+
+`ai -c [conversation_id]`
+
+###### Delete a conversation:
+
+`ai -d [conversation_id]`
+
+###### Delete all conversations:
+
+`rm "/root/conversations.json"`
 
 ## Example usage:
 
 [![asciicast](https://asciinema.org/a/566887.svg)](https://asciinema.org/a/566887)
-
----
 
 ## Installation:
 
