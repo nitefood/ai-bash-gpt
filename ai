@@ -12,6 +12,8 @@
 # │ (Launch the script with the -h parameter or visit the project's homepage)            │
 # ╰──────────────────────────────────────────────────────────────────────────────────────╯
 
+AI_VERSION="0.2"
+
 # Color scheme
 green=$'\e[38;5;035m'
 yellow=$'\e[38;5;142m'
@@ -25,6 +27,7 @@ redbg=$'\e[48;5;210m'${black}
 greenbg=$'\e[48;5;035m'${black}
 yellowbg=$'\e[48;5;142m'${black}
 bold=$'\033[1m'
+underline=$'\e[4m'
 dim=$'\e[2m'
 default=$'\e[0m'
 IFS=$'\n'
@@ -38,10 +41,15 @@ TMP_CONVERSATIONS_FILENAME=".${CONVERSATIONS_FILENAME}.tmp" # swap conversation 
 CONVERSATION_TOPIC="\"new conversation\"" # Default name for a new conversation
 CONVERSATION_BUFFER_LEN=30 # Conversation buffer length (number of messages ChatGPT will try to remember)
 RETRY_WAIT_TIME=3 # Retry wait time in case of server error
+IMAGE_GENERATION_MODE=false
+IMAGES_TO_GENERATE=1
 
 APIKEY_FILENAME="${WORKING_DIR}/${APIKEY_FILENAME}"
 CONVERSATIONS_FILENAME="${WORKING_DIR}/${CONVERSATIONS_FILENAME}"
 TMP_CONVERSATIONS_FILENAME="${WORKING_DIR}/${TMP_CONVERSATIONS_FILENAME}"
+
+OPENAI_CHAT_API_ENDPOINT="https://api.openai.com/v1/chat/completions"
+OPENAI_IMAGE_API_ENDPOINT="https://api.openai.com/v1/images/generations"
 
 API_KEY=""
 
@@ -96,7 +104,7 @@ SendChat() {
   while true; do
     msg_buf_size=$(wc -c <<<"$input" | numfmt --to=iec)
     StatusbarMessage "Request sent (size: ${bluebg}$msg_buf_size${lightgreybg} bytes) Waiting for ChatGPT to reply"
-    response_json=$(curl -s https://api.openai.com/v1/chat/completions \
+    response_json=$(curl -s $OPENAI_CHAT_API_ENDPOINT \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer $API_KEY" \
       -d '{ "model": "gpt-3.5-turbo", "messages": '"$input"' }')
@@ -122,6 +130,90 @@ SendChat() {
   done
   StatusbarMessage
   echo "$gpt_output"
+}
+
+GenerateImage() {
+  while true; do
+    msg_buf_size=$(wc -c <<<"$input" | numfmt --to=iec)
+    [[ "$IMAGES_TO_GENERATE" -gt 1 ]] && plural="s" || plural=""
+    StatusbarMessage "Generating ${bluebg}$IMAGES_TO_GENERATE${lightgreybg} 1024x1024 image${plural}"
+    response_json=$(curl -s $OPENAI_IMAGE_API_ENDPOINT \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $API_KEY" \
+      -d '{"prompt": "'"$userinput"'", "n": '"$IMAGES_TO_GENERATE"', "size": "1024x1024"}')
+    gpt_output=$(jq -r 'select (.data != null) | .data[].url' <<<"$response_json")
+    if [ -z "$gpt_output" ]; then
+      StatusbarMessage
+      error_type=$(jq -r '.error.type' <<<"$response_json")
+      error_code=$(jq -r '.error.code' <<<"$response_json")
+      error_msg=$(jq -r '.error.message' <<<"$response_json")
+      echo -e "\n${red}- API ERROR -${default}" >&2
+      echo -e "${redbg} TYPE ${default} $error_type" >&2
+      echo -e "${redbg} CODE ${default} $error_code" >&2
+      echo -e "${redbg} MESG ${default} $error_msg" >&2
+      retryafter="$RETRY_WAIT_TIME"
+      while [[ ${retryafter} -gt 0 ]]; do
+        StatusbarMessage "ChatGPT error. Retrying in ${redbg}${retryafter}${lightgreybg} seconds"
+        sleep 1
+        (( retryafter-- ))
+      done
+    else 
+      createdate=$(jq -r '.created' <<<"$response_json")
+      break
+    fi
+  done
+  StatusbarMessage
+  term_cols=$(tput cols)
+  tmpfile=$(mktemp)
+  imgcounter=1
+  arr_imgfiles=()
+  arr_imgurls=()
+  for imageurl in $gpt_output; do
+    StatusbarMessage "Parsing image n.$imgcounter"
+    imgfile="${tmpfile}_${imgcounter}"
+    arr_imgfiles+=("$imgfile")
+    curl -s "$imageurl" > "$imgfile"
+    shortened_imgurl="$(curl -s "http://tinyurl.com/api-create.php?url=$imageurl")"
+    arr_imgurls+=("$shortened_imgurl")
+    StatusbarMessage
+    (( imgcounter++ ))
+  done
+  i=1
+  ( for imgfile in "${arr_imgfiles[@]}"; do
+      convert "$imgfile" -font DejaVu-Sans -pointsize 250 -fill magenta -gravity south -annotate +0+5 "$i" miff:-
+      (( i++ ))
+    done ) | montage - -background '#000000' -geometry +0+0 "$tmpfile.png"
+  
+  echo -e "\n${default}\"${bold}${underline}${userinput}${default}\"\n"
+  catimg -w "$term_cols" "$tmpfile.png"
+  i=1
+  for imgurl in "${arr_imgurls[@]}"; do
+    echo -e "${blue}[$i]${default} - $imgurl"
+    (( i++ ))
+  done
+  
+  savedir=$(date +"%Y_%m_%d-%H_%M_%S" -d @"$createdate")
+  savedir="${WORKING_DIR}/${savedir}_imgs"
+  echo ""
+  read -erp "${bold}Do you want to save the image(s) and prompt locally to ${blue}${savedir}${default} ? [Y/n]" wannasave
+  if [ -z "$wannasave" ] || [ "$wannasave" = "Y" ] || [ "$wannasave" = "y" ]; then
+    # save the images locally
+    mkdir -p "$savedir"
+    i=1
+    for imgfile in "${arr_imgfiles[@]}"; do
+      # move the individual image files to the savedir, renamed as 1.png, 2.png and so on
+      mv "$imgfile" "$savedir/$i.png"
+      (( i++ ))
+    done
+    # save the grid summary
+    mv "$tmpfile.png" "$savedir/preview_grid.png"
+    # and the prompt
+    echo "$userinput" > "$savedir/prompt.txt"
+  else
+    echo -e "\nNote: the image links will be valid for ${blue}2 hours${default}, after which OpenAI will delete them!\n"
+  fi
+  # delete any leftover temporary files
+  rm "${tmpfile}"*
 }
 
 MarkdownEcho() {
@@ -192,6 +284,10 @@ ReplayConversationMessages() {
 Ctrl_C() {
   SaveConversation
   StatusbarMessage
+  if [ "$IMAGE_GENERATION_MODE" = true ] && [ -n "$tmpfile" ]; then
+    # clean up temp files
+    rm "${tmpfile}"*
+  fi
   tput sgr0
   exit 0
 }
@@ -342,6 +438,7 @@ INTERACTIVE_CONVERSATION=false
 DELETE_CONVERSATION=false
 CONTINUE_CONVERSATION=false
 CONVERSATION_ID_TO_CONTINUE=""
+tmpfile=""
 
 if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
   # script was called with a command line parameter, or was invoked through a pipe
@@ -384,15 +481,16 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
       case "${optchar}" in
         "h")
           # display usage help
-          echo -e "\n${bold}Usage:${default}\n\n${dim}Show this help:${default}\n  ${blue}ai -h${default}"
+          echo -e "\n${bold}ai-bash-gpt v${AI_VERSION} Usage:${default}\n\n${dim}Show this help:${default}\n  ${blue}ai -h${default}"
           echo -e "${dim}Start a new interactive conversation:${default}\n  ${blue}ai${default}"
-          echo -e "${dim}One shot Q&A (exit after reply):${default}\n  ${blue}ai \"how many planets are there in the solar system?\"${default}"
-          echo -e "${dim}Force an interactive conversation (continue interacting after reply):${default}\n  ${blue}ai -i \"what is the fastest animal on earth?\"${default}"
+          echo -e "${dim}One shot Q&A:${default}\n  ${blue}ai \"how many planets are there in the solar system?\"${default}"
+          echo -e "${dim}Generate one or more images (default: 1):${default}\n  ${blue}ai -i [num] \"a cute cat\"${default}"
           echo -e "${dim}Submit data as part of the question:${default}\n  ${blue}cat file.txt | ai can you summarize the contents of this file?${default}"
           echo -e "${dim}List saved conversations:${default}\n  ${blue}ai -l${default}"
           echo -e "${dim}Continue last conversation:${default}\n  ${blue}ai -c${default}"
-          echo -e "${dim}Continue specific conversation:${default}\n  ${blue}ai -c [conversation_id]${default}"
+          echo -e "${dim}Continue specific conversation:${default}\n  ${blue}ai -c <conversation_id>${default}"
           echo -e "${dim}Delete a conversation:${default}\n  ${blue}ai -d <conversation_id>${default}"
+          echo -e "${dim}Delete multiple conversations:${default}\n  ${blue}ai -d <conversation_id_start>-<conversation_id_end>${default}"
           echo -e "${dim}Delete all conversations:${default}\n  ${blue}rm \"${CONVERSATIONS_FILENAME}\"${default}"
           exit 0
           ;;
@@ -408,18 +506,43 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
           # user wants to delete a previous conversation
           GetFullParamsFromCurrentPosition "$@"
           DELETE_CONVERSATION=true
+          CONVERSATION_ID_TO_DELETE_UPTO=""
           ParseConversationsFile
-          CONVERSATION_ID_TO_DELETE=${userinput//[^0-9]/} # remove all non-digits (e.g. the user passed "-d3" instead of "-d 3")
+          CONVERSATION_ID_TO_DELETE=${userinput//[^0-9\-]/} # remove all non-digits (excluding dash) (e.g. the user passed "-d3" instead of "-d 3")
+          if [ -z "${CONVERSATION_ID_TO_DELETE##*-*}" ]; then
+            # user wants to delete a range of conversations
+            CONVERSATION_ID_TO_DELETE_UPTO=$(cut -d '-' -f 2 <<<"$CONVERSATION_ID_TO_DELETE")
+            CONVERSATION_ID_TO_DELETE=$(cut -d '-' -f 1 <<<"$CONVERSATION_ID_TO_DELETE")
+            if (( CONVERSATION_ID_TO_DELETE_UPTO < CONVERSATION_ID_TO_DELETE )); then
+                echo -e "\nError: wrong conversation range, cannot delete it!"
+                exit 1
+            fi
+          else
+            CONVERSATION_ID_TO_DELETE_UPTO="$CONVERSATION_ID_TO_DELETE"
+          fi
           if  (( CONVERSATION_ID_TO_DELETE > num_previous_conversations )) || \
-              (( CONVERSATION_ID_TO_DELETE == 0 )); then
-            echo -e "\nError: conversation not found, cannot delete it!"
+              (( CONVERSATION_ID_TO_DELETE_UPTO > num_previous_conversations )) || \
+              (( CONVERSATION_ID_TO_DELETE == 0 )) || \
+              (( CONVERSATION_ID_TO_DELETE_UPTO == 0 )); then
+            echo -e "\nError: conversation not found (or wrong conversation range), cannot delete it!"
             exit 1
           fi
-          (( CONVERSATION_ID_TO_DELETE-- ))
-          convname=$(jq '.['"${CONVERSATION_ID_TO_DELETE}"'].conversation_name' "$CONVERSATIONS_FILENAME")
-          jq 'del (.['"$CONVERSATION_ID_TO_DELETE"'])' "${CONVERSATIONS_FILENAME}" > "${TMP_CONVERSATIONS_FILENAME}" && \
-            mv "${TMP_CONVERSATIONS_FILENAME}" "${CONVERSATIONS_FILENAME}"
-          echo -e "\n${default}Conversation ${yellow}$convname${default} deleted"
+          if [ "$CONVERSATION_ID_TO_DELETE_UPTO" != "$CONVERSATION_ID_TO_DELETE" ]; then
+            delete_prompt="${yellow}Delete conversations from ${bold}$CONVERSATION_ID_TO_DELETE${default}${yellow} to ${bold}$CONVERSATION_ID_TO_DELETE_UPTO${default}${yellow}? [y/N]"
+          else
+            delete_prompt="${yellow}Delete conversation ${bold}$CONVERSATION_ID_TO_DELETE${default}${yellow}? [y/N]"
+          fi
+          read -erp "$delete_prompt" wannadelete
+          if [ "$wannadelete" = "Y" ] || [ "$wannadelete" = "y" ]; then
+            (( CONVERSATION_ID_TO_DELETE-- ))
+            (( CONVERSATION_ID_TO_DELETE_UPTO-- ))
+            for ((convid=CONVERSATION_ID_TO_DELETE_UPTO; convid >= CONVERSATION_ID_TO_DELETE; convid--)); do
+              convname=$(jq '.['"${convid}"'].conversation_name' "$CONVERSATIONS_FILENAME")
+              jq 'del (.['"$convid"'])' "${CONVERSATIONS_FILENAME}" > "${TMP_CONVERSATIONS_FILENAME}" && \
+                mv "${TMP_CONVERSATIONS_FILENAME}" "${CONVERSATIONS_FILENAME}"
+              echo -e "\n${default}Conversation ${yellow}$convname${default} deleted"
+            done
+          fi
           exit 0
           ;;
         "l")
@@ -440,9 +563,15 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
           exit
           ;;
         "i")
-          # user wants to continue interacting after the reply
-          INTERACTIVE_CONVERSATION=true
-          shift
+          # user wants to generate 1 or more images
+          IMAGE_GENERATION_MODE=true
+          GetFullParamsFromCurrentPosition "$@"
+          # check if the user specified a number of images
+          regexp_number_and_space="^ (10|[1-9]) (.*)"
+          if [[ $userinput =~ $regexp_number_and_space ]]; then
+            IMAGES_TO_GENERATE="${BASH_REMATCH[1]}"
+            userinput="${BASH_REMATCH[2]}"
+          fi
           break
           ;;
         *)
@@ -458,8 +587,9 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
     # trim leading whitespace from userinput
     userinput=$(awk '{ sub(/^[ \t]+/, ""); print }' <<<"$userinput")
   fi
-
+  
   ParseConversationsFile
+  
   if [ "$CONTINUE_CONVERSATION" = true ]; then
     if [ "$num_previous_conversations" = "0" ]; then
       echo "Error: No previous conversations found, cannot continue!"
@@ -476,16 +606,17 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
       fi
       conversation_id="$(( CONVERSATION_ID_TO_CONTINUE-1 ))"
     fi
+    if [ ! -t 0 ]; then
+      # we have input from stdin (script was invoked through a pipe)
+      echo "Error: cannot continue last conversation and also accept new data"
+      exit 1
+    fi
     SwitchConversation "$conversation_id"
-  else
+  elif [ "$IMAGE_GENERATION_MODE" = false ]; then
+    # we're not in image generation mode
     if [ ! -t 0 ]; then
       # we have input from stdin (script was invoked through a pipe)
       PIPED_SCRIPT=true
-      if [ "$CONTINUE_CONVERSATION" = true ]; then
-        echo "Error: cannot continue last conversation and also accept new data"
-        exit 1
-      fi
-
       if [ "$OPTIONS_PRESENT" = false ]; then
         # shellcheck disable=SC2124
         userinput="$@"
@@ -522,8 +653,22 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
       conversation_messages=2
       UpdateConversationTopic
     else
-      # one shot Q&A, exit after reply
-      exit 0
+      # one shot Q&A, ask the user if they want to continue the conversation
+      # or timeout after 3 seconds and quit without saving the conversation
+      if read -r -s -t 5 -n 1 -p "${blue}Press any key within ${redbg} 5 ${default}${blue} seconds to continue this conversation...${default}"; then
+        tput cub "$(tput cols)"
+        tput el
+        INTERACTIVE_CONVERSATION=true
+        # prepare the conversation, which was already started through the command line
+        conversation_history=$(jq -c ". += $userinput" <<<"$conversation_history")
+        conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
+        conversation_messages=2
+        UpdateConversationTopic
+      else
+        tput cub "$(tput cols)"
+        tput el
+        exit 0
+      fi
     fi
   fi
 else
@@ -532,15 +677,19 @@ else
   conversation_messages=0
 fi
 
-ParseConversationsFile
+stty -echoctl && trap Ctrl_C INT
+GetAPIKey
+
+if [ "$IMAGE_GENERATION_MODE" = true ]; then
+  GenerateImage
+  exit 0
+fi
 
 #*############*#
 #* REPL start *#
 #*############*#
 
-stty -echoctl && trap Ctrl_C INT
-
-GetAPIKey
+ParseConversationsFile
 
 echo -en "\n${green}Enter an empty line to send your query, or ${greenbg} ? ${default}${green} to view previous conversations)\n"
 while true; do

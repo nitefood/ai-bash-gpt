@@ -1,10 +1,20 @@
-# AI - a commandline ChatGPT client in BASH with conversation/completion support
+# AI - a commandline ChatGPT client in BASH with conversation/completion and image generation support
 
 ## Features:
 
 * **Interactive chat sessions** with the `gpt-3.5-turbo` API endpoint (aka ChatGPT)
 
 * **Multiline input**
+
+* **Image generation support:**
+  
+  * image preview grid rendered directly in the terminal
+  
+  * generate up to 10 images at a time
+  
+  * automatic URL shortening
+  
+  * optionally save images and prompt to local disk
 
 * **Markdown support for replies** (requires [glow](https://github.com/charmbracelet/glow#installation))
 
@@ -32,13 +42,13 @@
 
 `ai`
 
-###### One shot Q&A (exit after reply):
+###### One shot Q&A (will ask you to continue interacting, otherwise quit after answer):
 
 `ai "how many planets are there in the solar system?"`
 
-###### Force an interactive conversation (continue interacting after reply):
+###### Generate one or more images (default 1, max 10):
 
-`ai -i "what is the fastest animal on earth?"`
+`ai -i [num] "a cute cat"`
 
 ###### Submit data as part of the question:
 
@@ -54,29 +64,45 @@
 
 ###### Continue specific conversation:
 
-`ai -c [conversation_id]`
+`ai -c <conversation_id>`
 
-###### Delete a conversation:
+###### Delete a specific conversation:
 
-`ai -d [conversation_id]`
+`ai -d <conversation_id>`
+
+###### Delete selected conversations:
+
+`ai -d <conversation_id_start>-<conversation_id_end>`
 
 ###### Delete all conversations:
 
 `rm "/root/conversations.json"`
 
-## Example usage:
+## Usage examples:
 
-[![asciicast](https://asciinema.org/a/566887.svg)](https://asciinema.org/a/566887)
+##### (Interaction and conversation resuming)
+
+[![asciicast](https://asciinema.org/a/572784.svg)](https://asciinema.org/a/572784)
+
+##### (Image generation)
+
+[![asciicast](https://asciinema.org/a/572785.svg)](https://asciinema.org/a/572785)
+
+##### (Input piping to stdin)
+
+[![asciicast](https://asciinema.org/a/572786.svg)](https://asciinema.org/a/572786)
 
 ## Installation:
 
 ###### Prerequisites:
 
+* Install jq, curl, imagemagick, catimg
+  
+  * for e.g. Ubuntu: `apt -y install jq curl imagemagick catimg`
+
 * Install [glow](https://github.com/charmbracelet/glow#installation) for Markdown rendering support in your terminal
 
-* `jq` (e.g. `apt install jq`)
-
-* `curl` (e.g. `apt install curl`)
+###### Script download:
 
 Install the script by either cloning this repository or directly downloading to your `$PATH`, e.g.:
 
