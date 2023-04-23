@@ -2,7 +2,7 @@
 
 ## Features:
 
-* **Interactive chat sessions** with the `gpt-3.5-turbo` and `gpt-4` API endpoints (aka ChatGPT/ChatGPT4)
+* **Interactive chat sessions** with OpenAI `gpt-3.5-turbo` and `gpt-4` completion API endpoint models (aka ChatGPT/ChatGPT4) -- *note: ChatGPT4 currently requires an API key from a paid OpenAI plan to work*
 
 * **Multiline input**
 
@@ -38,7 +38,7 @@
 
 ## Full command line options (`ai -h`):
 
-_Note: the `-4` optional parameter switches to GPT-4 model. Currently you need a paid OpenAI plan for this._
+* *Note: the `-4` optional parameter switches to GPT-4 model.*
 
 ###### Start a new interactive conversation:
 
