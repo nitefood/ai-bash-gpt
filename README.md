@@ -76,7 +76,7 @@
 
 ###### Delete all conversations:
 
-`rm "/root/conversations.json"`
+`rm "$HOME/conversations.json"`
 
 ## Usage examples:
 

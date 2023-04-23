@@ -12,7 +12,10 @@
 # │ (Launch the script with the -h parameter or visit the project's homepage)            │
 # ╰──────────────────────────────────────────────────────────────────────────────────────╯
 
-AI_VERSION="0.2"
+# TODO: customizable system prompting (to "prime" the assistant)
+# TODO: temperature setting and presets (mimick Bing's "Creative", "Balanced", "Precise")
+
+AI_VERSION="0.3"
 
 # Color scheme
 green=$'\e[38;5;035m'
@@ -50,6 +53,8 @@ TMP_CONVERSATIONS_FILENAME="${WORKING_DIR}/${TMP_CONVERSATIONS_FILENAME}"
 
 OPENAI_CHAT_API_ENDPOINT="https://api.openai.com/v1/chat/completions"
 OPENAI_IMAGE_API_ENDPOINT="https://api.openai.com/v1/images/generations"
+OPENAI_GPT_MODEL="gpt-3.5-turbo"
+CHATGPT_VERSION="3.5"
 
 API_KEY=""
 
@@ -107,7 +112,7 @@ SendChat() {
     response_json=$(curl -s $OPENAI_CHAT_API_ENDPOINT \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer $API_KEY" \
-      -d '{ "model": "gpt-3.5-turbo", "messages": '"$input"' }')
+      -d '{ "model": "'$OPENAI_GPT_MODEL'", "messages": '"$input"' }')
     gpt_output=$(jq -c '.choices[0].message' <<<"$response_json")
     if [ "$gpt_output" = "null" ]; then
       StatusbarMessage
@@ -230,7 +235,11 @@ MarkdownEcho() {
 UpdateConversationTopic() {
   # $1 = full conversation history
   temp_conversation_history=$(jq -c ". += [{\"role\": \"user\", \"content\": \"give me a 4-5 words title for this conversation\"}]" <<<"$conversation_history")
+  # temporarily switch to gpt-3.5-turbo model to save credits when summarizing the conversation
+  SavedGPTModel="$OPENAI_GPT_MODEL"
+  OPENAI_GPT_MODEL="gpt-3.5-turbo"
   CONVERSATION_TOPIC=$(SendChat "$temp_conversation_history" | jq -r '.content' | tr -d '\n')
+  OPENAI_GPT_MODEL="$SavedGPTModel"
   # sometimes ChatGPT replies with conversation names enclosed in double quotes, other times it has double quotes inside the topic description. Handle it
   if [ "${CONVERSATION_TOPIC::1}" = '"' ] && [ "${CONVERSATION_TOPIC: -1}" = '"' ]; then
     CONVERSATION_TOPIC=$(sed -e 's/^"//g' -e 's/"$//g' <<<"$CONVERSATION_TOPIC")
@@ -451,9 +460,9 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
     # 	in this mode, getopts sets optchar to:
     # 	'?' -> unknown option
     # 	':' -> missing mandatory parameter to the option
-    optspec=":hcd:li"
+    optspec=":h4cd:li"
 
-    while getopts "$optspec" optchar; do {
+    while getopts "$optspec" optchar; do { 
 
       GetFullParamsFromCurrentPosition(){
         #
@@ -481,18 +490,24 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
       case "${optchar}" in
         "h")
           # display usage help
-          echo -e "\n${bold}ai-bash-gpt v${AI_VERSION} Usage:${default}\n\n${dim}Show this help:${default}\n  ${blue}ai -h${default}"
-          echo -e "${dim}Start a new interactive conversation:${default}\n  ${blue}ai${default}"
-          echo -e "${dim}One shot Q&A:${default}\n  ${blue}ai \"how many planets are there in the solar system?\"${default}"
+          echo -e "\n${bold}ai-bash-gpt v${AI_VERSION} Usage:${default}\n"
+          echo -e "${bold}Note: the ${blue}-4${default}${bold} optional parameter switches to GPT-4 model. Currently you need a paid OpenAI plan for this.\n"
+          echo -e "${dim}Show this help:${default}\n  ${blue}ai -h${default}"
+          echo -e "${dim}Start a new interactive conversation:${default}\n  ${blue}ai [-4]${default}"
+          echo -e "${dim}One shot Q&A:${default}\n  ${blue}ai [-4] \"how many planets are there in the solar system?\"${default}"
           echo -e "${dim}Generate one or more images (default: 1):${default}\n  ${blue}ai -i [num] \"a cute cat\"${default}"
-          echo -e "${dim}Submit data as part of the question:${default}\n  ${blue}cat file.txt | ai can you summarize the contents of this file?${default}"
+          echo -e "${dim}Submit data as part of the question:${default}\n  ${blue}cat file.txt | ai [-4] can you summarize the contents of this file?${default}"
           echo -e "${dim}List saved conversations:${default}\n  ${blue}ai -l${default}"
-          echo -e "${dim}Continue last conversation:${default}\n  ${blue}ai -c${default}"
-          echo -e "${dim}Continue specific conversation:${default}\n  ${blue}ai -c <conversation_id>${default}"
+          echo -e "${dim}Continue last conversation:${default}\n  ${blue}ai [-4] -c${default}"
+          echo -e "${dim}Continue specific conversation:${default}\n  ${blue}ai [-4] -c <conversation_id>${default}"
           echo -e "${dim}Delete a conversation:${default}\n  ${blue}ai -d <conversation_id>${default}"
           echo -e "${dim}Delete multiple conversations:${default}\n  ${blue}ai -d <conversation_id_start>-<conversation_id_end>${default}"
           echo -e "${dim}Delete all conversations:${default}\n  ${blue}rm \"${CONVERSATIONS_FILENAME}\"${default}"
           exit 0
+          ;;
+        "4")
+          OPENAI_GPT_MODEL="gpt-4"
+          CHATGPT_VERSION="4"
           ;;
         "c")
           # user wants to continue a conversation
@@ -584,7 +599,6 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
       esac
     }
     done
-    # trim leading whitespace from userinput
     userinput=$(awk '{ sub(/^[ \t]+/, ""); print }' <<<"$userinput")
   fi
   
@@ -614,10 +628,16 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
     SwitchConversation "$conversation_id"
   elif [ "$IMAGE_GENERATION_MODE" = false ]; then
     # we're not in image generation mode
+
+    # GPT version is not 3.5, shift the passed input
+    # this is necessary for when the user only passes "-4" as an option, as shifting
+    # is not performed during option parsing
+    [[ "$CHATGPT_VERSION" != "3.5" ]] && shift
+
     if [ ! -t 0 ]; then
       # we have input from stdin (script was invoked through a pipe)
       PIPED_SCRIPT=true
-      if [ "$OPTIONS_PRESENT" = false ]; then
+      if [ -z "$userinput" ]; then
         # shellcheck disable=SC2124
         userinput="$@"
       fi
@@ -629,45 +649,53 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
       # trim trailing newline from userinput and make a JSON string
       # out of the sole user input to safely pass to the API endpoint
       userinput=$(echo -en "$@")
-      userinput=$(echo -en "$userinput" | jq -Rs '.')
+      [[ -n "$userinput" ]] && userinput=$(echo -en "$userinput" | jq -Rs '.')
     fi
-    GetAPIKey
-    userinput=$( echo -n "[{\"role\": \"user\", \"content\": $userinput}]")
-    # echo "$userinput"; exit # DBG
-    response_message=$(SendChat "$userinput")
-    response_text=$(jq -r '.content' <<<"$response_message")
-    echo -e "\n${lightgreybg} ChatGPT ${default} replied:"
-    MarkdownEcho "$response_text"
-    if [ "$PIPED_SCRIPT" = true ]; then
-      conversation_history=$(jq -c ". += $userinput" <<<"$conversation_history")
-      conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
-      conversation_messages=2
-      UpdateConversationTopic
-      SaveConversation
-      echo "${bold}- Note: you can continue this conversation by invoking ${blue}ai -c${default}"
-      exit 0
-    elif [ "$INTERACTIVE_CONVERSATION" = true ]; then
-      # prepare the conversation, which was already started through the command line
-      conversation_history=$(jq -c ". += $userinput" <<<"$conversation_history")
-      conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
-      conversation_messages=2
-      UpdateConversationTopic
+    # echo "Model: v$CHATGPT_VERSION, input='$userinput'"; exit # DBG
+    if [ -z "$userinput" ]; then
+      # no userinput was passed, we're here only because user passed the -4 option and nothing else
+      # prepare the REPL and keep going
+      INTERACTIVE_CONVERSATION=true
+      conversation_messages=0
     else
-      # one shot Q&A, ask the user if they want to continue the conversation
-      # or timeout after 3 seconds and quit without saving the conversation
-      if read -r -s -t 5 -n 1 -p "${blue}Press any key within ${redbg} 5 ${default}${blue} seconds to continue this conversation...${default}"; then
-        tput cub "$(tput cols)"
-        tput el
-        INTERACTIVE_CONVERSATION=true
+      GetAPIKey
+      userinput=$( echo -n "[{\"role\": \"user\", \"content\": $userinput}]")
+      # echo "$userinput"; exit # DBG
+      response_message=$(SendChat "$userinput")
+      response_text=$(jq -r '.content' <<<"$response_message")
+      echo -e "\n${lightgreybg} ChatGPT ${default} replied:"
+      MarkdownEcho "$response_text"
+      if [ "$PIPED_SCRIPT" = true ]; then
+        conversation_history=$(jq -c ". += $userinput" <<<"$conversation_history")
+        conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
+        conversation_messages=2
+        UpdateConversationTopic
+        SaveConversation
+        echo "${bold}- Note: you can continue this conversation by invoking ${blue}ai -c${default}"
+        exit 0
+      elif [ "$INTERACTIVE_CONVERSATION" = true ]; then
         # prepare the conversation, which was already started through the command line
         conversation_history=$(jq -c ". += $userinput" <<<"$conversation_history")
         conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
         conversation_messages=2
         UpdateConversationTopic
       else
-        tput cub "$(tput cols)"
-        tput el
-        exit 0
+        # one shot Q&A, ask the user if they want to continue the conversation
+        # or timeout after 3 seconds and quit without saving the conversation
+        if read -r -s -t 5 -n 1 -p "${blue}Press any key within ${redbg} 5 ${default}${blue} seconds to continue this conversation...${default}"; then
+          tput cub "$(tput cols)"
+          tput el
+          INTERACTIVE_CONVERSATION=true
+          # prepare the conversation, which was already started through the command line
+          conversation_history=$(jq -c ". += $userinput" <<<"$conversation_history")
+          conversation_history=$(jq -c ". += [$response_message]" <<<"$conversation_history")
+          conversation_messages=2
+          UpdateConversationTopic
+        else
+          tput cub "$(tput cols)"
+          tput el
+          exit 0
+        fi
       fi
     fi
   fi
@@ -733,7 +761,7 @@ while true; do
       UpdateConversationTopic
     fi
     response_text=$(jq -r '.content' <<<"$response_message")
-    ChatBubble "ChatGPT" "${lightgreybg}" "${white}"
+    ChatBubble "ChatGPT-${CHATGPT_VERSION}" "${lightgreybg}" "${white}"
     MarkdownEcho "$response_text"
   fi
 done
