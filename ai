@@ -441,7 +441,6 @@ terminal_width=$(tput cols)
 trap 'terminal_width=$(tput cols)' SIGWINCH
 conversation_history="[]"
 userinput=""
-OPTIONS_PRESENT=false
 PIPED_SCRIPT=false
 INTERACTIVE_CONVERSATION=false
 DELETE_CONVERSATION=false
@@ -486,7 +485,6 @@ if [ "$#" -ge 1 ] || [ ! -t 0 ]; then
         done
       }
 
-      OPTIONS_PRESENT=true
       case "${optchar}" in
         "h")
           # display usage help
