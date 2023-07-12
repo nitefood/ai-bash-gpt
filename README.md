@@ -1,8 +1,8 @@
-# AI - a commandline ChatGPT client in BASH with conversation/completion and image generation support
+# AI - a commandline ChatGPT (3.5/4) client in BASH with conversation/completion and image generation support
 
 ## Features:
 
-* **Interactive chat sessions** with the `gpt-3.5-turbo` API endpoint (aka ChatGPT)
+* **Interactive chat sessions** with OpenAI `gpt-3.5-turbo` and `gpt-4` completion API endpoint models (aka ChatGPT/ChatGPT4) -- *note: ChatGPT4 currently requires an API key from a paid OpenAI plan to work*
 
 * **Multiline input**
 
@@ -38,13 +38,15 @@
 
 ## Full command line options (`ai -h`):
 
+* *Note: the `-4` optional parameter switches to GPT-4 model.*
+
 ###### Start a new interactive conversation:
 
-`ai`
+`ai [-4]`
 
 ###### One shot Q&A (will ask you to continue interacting, otherwise quit after answer):
 
-`ai "how many planets are there in the solar system?"`
+`ai [-4] "how many planets are there in the solar system?"`
 
 ###### Generate one or more images (default 1, max 10):
 
@@ -52,7 +54,7 @@
 
 ###### Submit data as part of the question:
 
-`cat file.txt | ai can you summarize the contents of this file?`
+`cat file.txt | ai [-4] can you summarize the contents of this file?`
 
 ###### List saved conversations:
 
@@ -60,11 +62,11 @@
 
 ###### Continue last conversation:
 
-`ai -c`
+`ai [-4] -c`
 
 ###### Continue specific conversation:
 
-`ai -c <conversation_id>`
+`ai [-4] -c <conversation_id>`
 
 ###### Delete a specific conversation:
 
@@ -76,7 +78,7 @@
 
 ###### Delete all conversations:
 
-`rm "/root/conversations.json"`
+`rm "$HOME/conversations.json"`
 
 ## Usage examples:
 
